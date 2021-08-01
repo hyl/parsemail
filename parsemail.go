@@ -318,7 +318,7 @@ func handleTextEncoding(p *multipart.Part, contentTypeParams map[string]string) 
 		"windows-1252": charmap.Windows1252,
 	}
 
-	if cm, ok := codeToCharmap[charset]; ok {
+	if cm, ok := codeToCharmap[strings.ToLower(charset)]; ok {
 		decoder := cm.NewDecoder()
 		mailStr, err = decoder.String(string(mailData))
 	}
