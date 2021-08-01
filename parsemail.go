@@ -4,10 +4,12 @@ import (
 	"bytes"
 	"encoding/base64"
 	"fmt"
+	"golang.org/x/text/encoding/charmap"
 	"io"
 	"io/ioutil"
 	"mime"
 	"mime/multipart"
+	"mime/quotedprintable"
 	"net/mail"
 	"strings"
 	"time"
@@ -121,19 +123,19 @@ func parseMultipartRelated(msg io.Reader, boundary string) (textBody, htmlBody s
 
 		switch contentType {
 		case contentTypeTextPlain:
-			ppContent, err := ioutil.ReadAll(part)
+			ppContent, err := handleTextEncoding(part, params)
 			if err != nil {
 				return textBody, htmlBody, embeddedFiles, err
 			}
 
-			textBody += strings.TrimSuffix(string(ppContent[:]), "\n")
+			textBody += strings.TrimSuffix(ppContent[:], "\n")
 		case contentTypeTextHtml:
-			ppContent, err := ioutil.ReadAll(part)
+			ppContent, err := handleTextEncoding(part, params)
 			if err != nil {
 				return textBody, htmlBody, embeddedFiles, err
 			}
 
-			htmlBody += strings.TrimSuffix(string(ppContent[:]), "\n")
+			htmlBody += strings.TrimSuffix(ppContent, "\n")
 		case contentTypeMultipartAlternative:
 			tb, hb, ef, err := parseMultipartAlternative(part, params["boundary"])
 			if err != nil {
@@ -178,19 +180,19 @@ func parseMultipartAlternative(msg io.Reader, boundary string) (textBody, htmlBo
 
 		switch contentType {
 		case contentTypeTextPlain:
-			ppContent, err := ioutil.ReadAll(part)
+			ppContent, err := handleTextEncoding(part, params)
 			if err != nil {
 				return textBody, htmlBody, embeddedFiles, err
 			}
 
-			textBody += strings.TrimSuffix(string(ppContent[:]), "\n")
+			textBody += strings.TrimSuffix(ppContent[:], "\n")
 		case contentTypeTextHtml:
-			ppContent, err := ioutil.ReadAll(part)
+			ppContent, err := handleTextEncoding(part, params)
 			if err != nil {
 				return textBody, htmlBody, embeddedFiles, err
 			}
 
-			htmlBody += strings.TrimSuffix(string(ppContent[:]), "\n")
+			htmlBody += strings.TrimSuffix(ppContent[:], "\n")
 		case contentTypeMultipartRelated:
 			tb, hb, ef, err := parseMultipartRelated(part, params["boundary"])
 			if err != nil {
@@ -243,19 +245,24 @@ func parseMultipartMixed(msg io.Reader, boundary string) (textBody, htmlBody str
 				return textBody, htmlBody, attachments, embeddedFiles, err
 			}
 		} else if contentType == contentTypeTextPlain {
-			ppContent, err := ioutil.ReadAll(part)
+
+			if params["charset"] != "" {
+
+			}
+
+			ppContent, err := handleTextEncoding(part, params)
 			if err != nil {
 				return textBody, htmlBody, attachments, embeddedFiles, err
 			}
 
-			textBody += strings.TrimSuffix(string(ppContent[:]), "\n")
+			textBody += strings.TrimSuffix(ppContent[:], "\n")
 		} else if contentType == contentTypeTextHtml {
-			ppContent, err := ioutil.ReadAll(part)
+			ppContent, err := handleTextEncoding(part, params)
 			if err != nil {
 				return textBody, htmlBody, attachments, embeddedFiles, err
 			}
 
-			htmlBody += strings.TrimSuffix(string(ppContent[:]), "\n")
+			htmlBody += strings.TrimSuffix(ppContent[:], "\n")
 		} else if isAttachment(part) {
 			at, err := decodeAttachment(part)
 			if err != nil {
@@ -269,6 +276,54 @@ func parseMultipartMixed(msg io.Reader, boundary string) (textBody, htmlBody str
 	}
 
 	return textBody, htmlBody, attachments, embeddedFiles, err
+}
+
+// handleTextEncoding correctly parses any specific format issues
+func handleTextEncoding(p *multipart.Part, contentTypeParams map[string]string) (string, error) {
+
+	// deal with our transfer encoding first
+	transferEncoding := p.Header.Get("Content-Transfer-Encoding")
+	charset := contentTypeParams["charset"]
+
+	var err error
+	var mailData []byte
+	var mailStr string
+
+	// start by figuring out
+	if transferEncoding == "quoted-printable" {
+		qp := quotedprintable.NewReader(p)
+		mailData, err = ioutil.ReadAll(qp)
+
+		if err != nil {
+			return "", err
+		}
+	} else {
+		mailData, err = ioutil.ReadAll(p)
+
+		if err != nil {
+			return "", err
+		}
+	}
+
+	if transferEncoding == "base64" {
+		mailStr = base64.StdEncoding.EncodeToString(mailData)
+	} else {
+		mailStr = string(mailData)
+	}
+
+
+	// now, deal with windows-specific formats
+	var codeToCharmap = map[string]*charmap.Charmap{
+		"windows-1250": charmap.Windows1250,
+		"windows-1252": charmap.Windows1252,
+	}
+
+	if cm, ok := codeToCharmap[charset]; ok {
+		decoder := cm.NewDecoder()
+		mailStr, err = decoder.String(string(mailData))
+	}
+
+	return mailStr, nil
 }
 
 func decodeMimeSentence(s string) string {
